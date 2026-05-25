@@ -1,0 +1,192 @@
+// JUGADOR A (DERECHA) - VERSIÓN FINAL
+
+#pragma config FOSC=INTRCIO, WDTE=OFF, PWRTE=OFF, MCLRE=OFF, CP=OFF, CPD=OFF, BOREN=OFF, IESO=OFF, FCMEN=OFF
+#include <xc.h>
+#define _XTAL_FREQ 4000000
+
+// --- PINES ---
+#define TX_PIN PORTAbits.RA4 // Salida
+#define RX_PIN PORTAbits.RA5 // Entrada (Interrupción)
+
+// --- VARIABLES ---
+volatile signed char BalaEnemigaX = -1;
+volatile signed char BalaEnemigaY = -1;
+volatile char CodigoRecibido = 0; // 0=Nada, 1-8=Bala, 100=Gané
+
+signed char JugadorY = 3; // Posición superior del jugador (ocupa Y y Y+1)
+signed char BalaMiaX = -1, BalaMiaY = -1;     
+char Sortida[6];
+int Vidas = 3; 
+
+// --- CARAS PARA GAME OVER ---
+const char CARA_FELIZ[8] =  {0x3C, 0x42, 0xA5, 0x81, 0xA5, 0x99, 0x42, 0x3C};
+const char CARA_TRISTE[8] = {0x3C, 0x42, 0xA5, 0x81, 0x99, 0xA5, 0x42, 0x3C};
+
+// --- INTERRUPCIÓN DE RECEPCIÓN ---
+void __interrupt() ISR(void) {
+    if (RABIF) {
+        if (RX_PIN == 0) { // Start Bit
+            __delay_ms(2);
+            if (RX_PIN == 0) {
+                __delay_ms(5);
+                char dato = 0;
+                for(int i=0; i<8; i++) {
+                    if(RX_PIN) dato |= (1<<i);
+                    __delay_ms(5);
+                }
+                
+                // INTERPRETACIÓN DEL DATO
+                if (dato == 100) {
+                    CodigoRecibido = 100; // CÓDIGO DE VICTORIA (El otro murió)
+                } else {
+                    BalaEnemigaY = (signed char)dato; // Cast explicito para evitar warning
+                    BalaEnemigaX = 7;    // Entra por la derecha
+                }
+            }
+        }
+        RABIF = 0;
+    }
+}
+
+// --- ENVÍO ---
+void Enviar_Dato(char dato) {
+    GIE = 0; // Proteger envío
+    TX_PIN = 0; __delay_ms(5);
+    for(int i=0; i<8; i++) {
+        TX_PIN = (dato >> i) & 1;
+        __delay_ms(5);
+    }
+    TX_PIN = 1; __delay_ms(5);
+    GIE = 1;
+}
+
+// --- DRIVER PANTALLA ---
+void Envia3max(char Valor[]) {
+    char Port=0, Temp;
+    for(signed char j=5; j>=0; j--) {
+        for(signed char k=1; k<9; k++) {
+            Temp = Valor[j] & 0b10000000;
+            if(Temp==0) Port &= 0b11101111; else Port |= 0b00010000;
+            Valor[j] <<= 1; PORTB = Port;
+            Port |= 0b00100000; PORTB = Port; 
+            Port &= 0b11011111; PORTB = Port; 
+        }
+    }
+    Port |= 0b01000000; PORTB = Port; 
+    Port &= 0b10111111; PORTB = Port;
+}
+
+void Ini3max(void) {
+    char B[6];
+    B[0]=1; B[1]=0x0C; B[2]=1; B[3]=0x0C; B[4]=1; B[5]=0x0C; Envia3max(B); 
+    B[0]=0; B[1]=0x09; B[2]=0; B[3]=0x09; B[4]=0; B[5]=0x09; Envia3max(B); 
+    B[0]=7; B[1]=0x0B; B[2]=7; B[3]=0x0B; B[4]=7; B[5]=0x0B; Envia3max(B); 
+}
+
+// --- FUNCIONES VISUALES ---
+void Mostrar_Cara(const char* cara, char color_idx) {
+    for(int f=0; f<8; f++) {
+        Sortida[1]=(char)(f+1); Sortida[3]=(char)(f+1); Sortida[5]=(char)(f+1);
+        Sortida[0]=0; Sortida[2]=0; Sortida[4]=0;
+        Sortida[color_idx] = cara[f];
+        Envia3max(Sortida);
+    }
+}
+
+void Actualizar_Pantalla(void) {
+    for(char f=0; f<8; f++) {
+        Sortida[1]=(char)(f+1); Sortida[3]=(char)(f+1); Sortida[5]=(char)(f+1);
+        Sortida[0]=0; Sortida[2]=0; Sortida[4]=0;
+        
+        // JUGADOR (2 PÍXELES DE ALTO)
+        if(f==JugadorY || f==(JugadorY+1)) Sortida[0] |= 1;
+        
+        // BALAS
+        if(BalaMiaX!=-1 && BalaMiaY==f) Sortida[0] |= (1<<BalaMiaX);
+        if(BalaEnemigaX!=-1 && BalaEnemigaY==f) Sortida[4] |= (1<<BalaEnemigaX); // Enemigo AZUL
+        
+        Envia3max(Sortida);
+    }
+}
+
+char Leer_Btn(void) {
+    ADCON0bits.GO=1; while(ADCON0bits.GO);
+    if(ADRESH<220 && ADRESH>200) return 1; 
+    if(ADRESH<194 && ADRESH>174) return 2; 
+    return 0;
+}
+
+void main(void) {
+    OSCCONbits.IRCF=0b110; TRISB=0; PORTB=0; TRISC=0; PORTC=0; TRISA=0xFF;
+    TRISAbits.TRISA4 = 0; TRISAbits.TRISA5 = 1; PORTAbits.RA4 = 1;
+    
+    
+    IOCAbits.IOCA5 = 1; INTCONbits.RABIE = 1; INTCONbits.GIE = 1;
+    
+    ANSEL=0b00000100; ANSELH=0; ADCON1=0x10; ADCON0=0x09;
+    Ini3max();
+
+    char btn_ant=0, disp_ant=0;
+    int tick=0;
+
+    // BUCLE PRINCIPAL (REINICIO AUTOMÁTICO)
+    while(1) {
+        // --- REINICIO DE VARIABLES ---
+        Vidas = 3; BalaMiaX = -1; BalaEnemigaX = -1; CodigoRecibido = 0;
+        PORTC = 0b00000111; // 3 Vidas
+
+        // BUCLE DE PARTIDA
+        while(Vidas > 0 && CodigoRecibido != 100) {
+            // 1. MOVIMIENTO (Límite 6 porque ocupamos 2 píxeles)
+            char btn = Leer_Btn();
+            if(btn!=btn_ant) {
+                if(btn==1 && JugadorY>0) JugadorY--;
+                if(btn==2 && JugadorY<6) JugadorY++; // Límite 6
+                __delay_ms(20);
+            }
+            btn_ant = btn;
+
+            // 2. DISPARO INFERIOR (JugadorY + 1)
+            if(PORTAbits.RA3==0) {
+                if(disp_ant==0 && BalaMiaX==-1) {
+                    BalaMiaX=1; BalaMiaY=JugadorY + 1; // Sale del pie
+                    Enviar_Dato((char)BalaMiaY); 
+                    disp_ant=1;
+                }
+            } else disp_ant=0;
+
+            // 3. FÍSICA
+            tick++;
+            if(tick>5) { 
+                if(BalaMiaX!=-1) { BalaMiaX++; if(BalaMiaX>7) BalaMiaX=-1; }
+                if(BalaEnemigaX!=-1) {
+                    BalaEnemigaX--;
+                    if(BalaEnemigaX<0) BalaEnemigaX=-1;
+                    // COLISIÓN (Con cabeza JugadorY o pies JugadorY+1)
+                    if(BalaEnemigaX==0 && (BalaEnemigaY==JugadorY || BalaEnemigaY==JugadorY+1)) {
+                        Vidas--;
+                        PORTC = 0xFF; __delay_ms(100); PORTC=0; 
+                        BalaEnemigaX = -1; 
+                        
+                        // MOSTRAR VIDAS RESTANTES
+                        if(Vidas==2) PORTC=0b00000011;
+                        else if(Vidas==1) PORTC=0b00000001;
+                    }
+                }
+                tick=0;
+            }
+            Actualizar_Pantalla();
+        }
+
+        // --- FIN DE PARTIDA ---
+        if (Vidas == 0) {
+            // PERDÍ: Aviso al otro y muestro cara triste
+            Enviar_Dato(100); // Código 100 = "He muerto"
+            for(int i=0; i<300; i++) Mostrar_Cara(CARA_TRISTE, 0); // Rojo triste (aprox 3 seg)
+        } 
+        else if (CodigoRecibido == 100) {
+            // GANÉ: El otro me avisó
+            for(int i=0; i<300; i++) Mostrar_Cara(CARA_FELIZ, 2); // Verde feliz (aprox 3 seg)
+        }
+    }
+}
